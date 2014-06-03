@@ -1,0 +1,272 @@
+diff -urNp rpm2html-1.11.2.patch0/rdf.c rpm2html-1.11.2/rdf.c
+--- rpm2html-1.11.2.patch0/rdf.c	2010-10-05 23:36:54.000000000 +0900
++++ rpm2html-1.11.2/rdf.c	2012-09-20 17:18:51.787156550 +0900
+@@ -75,7 +75,7 @@ rpmDataPtr rpmOpenRdf(char *nameRdf, rpm
+ 		    dir->vendor, rpm->extra->packager,
+ 		    rpm->group, rpm->summary, rpm->extra->description,
+ 		    rpm->extra->copyright, rpm->date, rpm->size, rpm->os,
+-		    rpm->distribution, rpm->vendor);
++		    rpm->distribution, rpm->vendor, rpm->extra->host);
+ 	if (id > 0) {
+ 	    for (i = 0;i < rpm->extra->nb_resources;i++)
+ 		sql_add_provides(id, rpm->extra->resources[i]->name);
+diff -urNp rpm2html-1.11.2.patch0/rpmopen.c rpm2html-1.11.2/rpmopen.c
+--- rpm2html-1.11.2.patch0/rpmopen.c	2010-11-10 06:57:42.000000000 +0900
++++ rpm2html-1.11.2/rpmopen.c	2012-09-20 17:16:28.803156902 +0900
+@@ -959,7 +959,7 @@ rpmAnalyze(char *path, char *nameRpm, co
+                              rpm->extra->packager, rpm->group,
+                              rpm->summary, rpm->extra->description,
+                              rpm->extra->copyright, rpm->date, rpm->size,
+-                             rpm->os, rpm->distribution, rpm->vendor);
++                             rpm->os, rpm->distribution, rpm->vendor, rpm->extra->host);
+         if (id > 0) {
+             for (i = 0; i < rpm->extra->nb_resources; i++)
+                 sql_add_provides(id, rpm->extra->resources[i]->name);
+@@ -967,6 +967,7 @@ rpmAnalyze(char *path, char *nameRpm, co
+                 sql_add_requires(id, rpm->extra->requires[i]->name,
+                                  rpm->extra->requires[i]->flag,
+                                  rpm->extra->requires[i]->version);
++			sql_add_changelog(rpm->extra->changelog, id);
+         }
+     } else
+         id = 0;
+diff -urNp rpm2html-1.11.2.patch0/sql.c rpm2html-1.11.2/sql.c
+--- rpm2html-1.11.2.patch0/sql.c	2012-09-20 10:31:55.291157217 +0900
++++ rpm2html-1.11.2/sql.c	2012-09-21 11:03:49.376155609 +0900
+@@ -193,7 +193,7 @@ int do_sql_query(const char *query, int 
+  * 									*
+  ************************************************************************/
+ 
+-#define MAX_QUERY 8000
++#define MAX_QUERY 65536
+ #define SMALL_QUERY 500
+ 
+ int sql_update_id(const char *table, int id,
+@@ -287,7 +287,7 @@ int sql_blind_insert(const char *table, 
+ 	end = &query[len];
+ 	left -= len;
+ 	len = strlen(value);
+-	if (len * 2 >= left) {
++	if (len + 128 >= left) {
+ 	    fprintf(stderr, "sql_blind_insert : %s(%d).%s overflow\n",
+ 		    table, id, key);
+ 	    return(-1);
+@@ -862,6 +862,8 @@ URL varchar(255), \n\
+ URLSrc varchar(255), \n\
+ Vendor int(11), \n\
+ Packager int(11), \n\
++VendorString varchar(50), \n\
++Host varchar(50), \n\
+ Category varchar(255), \n\
+ Summary varchar(255), \n\
+ Description text, \n\
+@@ -886,8 +888,8 @@ int sql_rebuild_files(void) {
+     const char *query =
+ "CREATE TABLE Files ( \n\
+     ID int(11) NOT NULL, \n\
+-    Path varchar(35) NOT NULL, \n\
+-    UNIQUE KEY id (ID,Path(35)), \n\
++    Path varchar(128) NOT NULL, \n\
++    UNIQUE KEY id (ID,Path(128)), \n\
+     INDEX (ID), \n\
+     INDEX (Path) \n\
+ )";
+@@ -922,10 +924,10 @@ int sql_rebuild_requires(void) {
+     const char *query =
+ "CREATE TABLE Requires ( \n\
+     ID int(11) NOT NULL, \n\
+-    Resource varchar(35) NOT NULL, \n\
++    Resource varchar(64) NOT NULL, \n\
+     Rel char(2), \n\
+     Value varchar(20), \n\
+-    UNIQUE KEY id (ID,Resource(35)), \n\
++    UNIQUE KEY id (ID,Resource(64)), \n\
+     INDEX (ID), \n\
+     INDEX (Resource) \n\
+ )";
+@@ -958,6 +960,22 @@ int sql_rebuild_queries(void) {
+     return(0);
+ }
+ 
++int sql_rebuild_changelogs(void) {
++    const char *query =
++"CREATE TABLE Changelogs ( \n\
++ID int(11) NOT NULL, \n\
++Log text, \n\
++PRIMARY KEY (ID) \n\
++)";
++
++    if (mysql_query(sql,query)) {
++	printf("sql_rebuild_changelogs: CREATE TABLE Packages failed %s\n",
++	       mysql_error(sql));
++	return(-1);
++    }
++    return(0);
++}
++
+ 
+ int sql_check_tables(void) {
+     const char *query = "SHOW TABLES";
+@@ -975,6 +993,7 @@ int sql_check_tables(void) {
+     int files = 0;
+     int queries = 0;
+     int distributions = 0;
++	int changelogs = 0;
+ 
+     int rebuilt = 0;
+ 
+@@ -1017,6 +1036,8 @@ int sql_check_tables(void) {
+ 		distributions = 1;
+ 	    if (!strcmp(row[0], "Searches"))
+ 		searches = 1;
++	    if (!strcmp(row[0], "Changelogs"))
++		changelogs = 1;
+ 	}
+ 	mysql_free_result(result);
+     }
+@@ -1085,6 +1106,11 @@ int sql_check_tables(void) {
+ 	if (!sql_rebuild_searches())
+ 	    rebuilt++;
+     }
++    if (!changelogs) {
++	fprintf(stderr, "Table Changelogs disapeared: rebuilding it\n");
++	if (!sql_rebuild_changelogs())
++	    rebuilt++;
++    }
+     return(rebuilt);
+ }
+ 
+@@ -1116,7 +1142,7 @@ int sql_add_mirror(const char *Name, con
+ int sql_add_file(const char *filename, int package) {
+     if ((filename == NULL) || (package <= 0))
+ 	return(-1);
+-    if (strlen(filename) > 35)
++    if (strlen(filename) > 128)
+ 	return(0);
+ 
+     return(sql_blind_insert("Files", "Path", filename, package));
+@@ -1136,9 +1162,10 @@ int sql_add_requires(int package, const 
+     int record;
+     if ((resource == NULL) || (package <= 0))
+ 	return(-1);
+-    if (strlen(resource) > 35)
++    if (strlen(resource) > 64)
+ 	return(0);
+ 
++	/* record 는 mysql_insert_id() 를 호출 하지만 Requires 의 ID는 AUTO_INCREMENT 를 사용하지 않는다. by vozlt@20120920 */
+     record = sql_blind_insert("Requires", "Resource", resource, package);
+     if ((rel != RPM2HTML_REQ_NONE) && (value != NULL) &&
+ 	(strlen(value) <= 50)) {
+@@ -1147,28 +1174,28 @@ int sql_add_requires(int package, const 
+ 	switch (rel) {
+ 	    case RPM2HTML_REQ_LT:
+ 		snprintf(query, SMALL_QUERY - 1,
+-			 "UPDATE Requires SET Rel='<',Value='%s' WHERE ID=%d",
+-			 value, record);
++			 "UPDATE Requires SET Rel='<',Value='%s' WHERE ID=%d AND Resource='%s'",
++			 value, package, resource);
+ 	        break;
+ 	    case RPM2HTML_REQ_LEQ:
+ 		snprintf(query, SMALL_QUERY - 1,
+-			 "UPDATE Requires SET Rel='<=',Value='%s' WHERE ID=%d",
+-			 value, record);
++			 "UPDATE Requires SET Rel='<=',Value='%s' WHERE ID=%d AND Resource='%s'",
++			 value, package, resource);
+ 	        break;
+ 	    case RPM2HTML_REQ_GT:
+ 		snprintf(query, SMALL_QUERY - 1,
+-			 "UPDATE Requires SET Rel='>',Value='%s' WHERE ID=%d",
+-			 value, record);
++			 "UPDATE Requires SET Rel='>',Value='%s' WHERE ID=%d AND Resource='%s'",
++			 value, package, resource);
+ 	        break;
+ 	    case RPM2HTML_REQ_GEQ:
+ 		snprintf(query, SMALL_QUERY - 1,
+-			 "UPDATE Requires SET Rel='>=',Value='%s' WHERE ID=%d",
+-			 value, record);
++			 "UPDATE Requires SET Rel='>=',Value='%s' WHERE ID=%d AND Resource='%s'",
++			 value, package, resource);
+ 	        break;
+ 	    case RPM2HTML_REQ_EQU:
+ 		snprintf(query, SMALL_QUERY - 1,
+-			 "UPDATE Requires SET Rel='=',Value='%s' WHERE ID=%d",
+-			 value, record);
++			 "UPDATE Requires SET Rel='=',Value='%s' WHERE ID=%d AND Resource='%s'",
++			 value, package, resource);
+ 	        break;
+ 	    case RPM2HTML_REQ_NONE:
+ 		query[0] = 0;
+@@ -1176,11 +1203,11 @@ int sql_add_requires(int package, const 
+ 	query[SMALL_QUERY - 1] = 0;
+ 	if (mysql_query(sql,query)) {
+ 	    printf("sql_add_requires: UPDATE Requires %d failed %s\n",
+-		   record, mysql_error(sql));
+-	    return(record);
++		   package, mysql_error(sql));
++	    return(package);
+ 	}
+     }
+-    return(record);
++    return(package);
+ }
+ 
+ int sql_add_vendor(const char *Name, const char *URL, const char *Description) {
+@@ -1225,6 +1252,13 @@ int sql_add_distribution(const char *Nam
+     return(id);
+ }
+ 
++int sql_add_changelog(const char *log, int package) {
++    if ((log == NULL) || (package <= 0))
++	return(-1);
++
++    return(sql_blind_insert("Changelogs", "Log", log, package));
++}
++
+ int sql_get_package_id(const char *filename) {
+     int id;
+     MYSQL_RES *result;
+@@ -1351,7 +1385,7 @@ int sql_add_package(const char *filename
+ 	int dist, const char *URL, const char *URLSrc, int vendor,
+ 	const char *Packager, const char *Category, const char *Summary,
+ 	const char *Description, const char *Copyright, int Date, int Size,
+-	const char *Os, const char *Distribution, const char *Vendor) {
++	const char *Os, const char *Distribution, const char *Vendor, const char *Host) {
+     int id;
+     int nb_fields = 0;
+     char installed_filename[500];
+@@ -1390,6 +1424,10 @@ int sql_add_package(const char *filename
+ 	nb_fields += sql_update_id("Packages", id, "URL", URL);
+     if (URLSrc != NULL)
+ 	nb_fields += sql_update_id("Packages", id, "URLSrc", URLSrc);
++    if (Vendor != NULL)
++	nb_fields += sql_update_id("Packages", id, "VendorString", Vendor);
++    if (Host != NULL)
++	nb_fields += sql_update_id("Packages", id, "Host", Host);
+     if (dist >= 0) {
+ 	char str[30];
+ 	snprintf(str, 30, "%d", dist);
+diff -urNp rpm2html-1.11.2.patch0/sql.h rpm2html-1.11.2/sql.h
+--- rpm2html-1.11.2.patch0/sql.h	2001-05-03 06:13:26.000000000 +0900
++++ rpm2html-1.11.2/sql.h	2012-09-20 17:17:22.845158925 +0900
+@@ -32,6 +32,7 @@ int sql_rebuild_mirrors(void);
+ int sql_rebuild_files(void);
+ int sql_rebuild_provides(void);
+ int sql_rebuild_requires(void);
++int sql_rebuild_changelogs(void);
+ 
+ /*
+  * display/dump
+@@ -76,11 +77,12 @@ int sql_add_package(const char *filename
+ 	int dist, const char *URL, const char *URLSrc, int vendor,
+ 	const char *Packager, const char *Category, const char *Summary,
+ 	const char *Description, const char *Copyright, int Date, int Size,
+-	const char *Os, const char *Distribution, const char *Vendor);
++	const char *Os, const char *Distribution, const char *Vendor, const char *Host);
+ int sql_add_file(const char *filename, int package);
+ int sql_add_provides(int package, const char *resource);
+ int sql_add_requires(int package, const char *resource, rpm_dep_flag rel,
+ 	             const char *value);
++int sql_add_changelog(const char *log, int package);
+ 
+ /*
+  * Checking/Removal of records

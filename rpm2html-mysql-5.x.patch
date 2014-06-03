@@ -1,0 +1,84 @@
+diff -urNp rpm2html-1.11.2.org/rpm2html.c rpm2html-1.11.2/rpm2html.c
+--- rpm2html-1.11.2.org/rpm2html.c	2010-11-10 06:53:46.000000000 +0900
++++ rpm2html-1.11.2/rpm2html.c	2012-08-22 16:41:15.922995967 +0900
+@@ -55,6 +55,8 @@ int main(int argc, char *argv[]) {
+     const char *dist = NULL;
+     const char *dir = NULL;
+ 
++	if (argc < 2) usage(argv[0]);
++
+     start_time = time(NULL);
+     gethostname(host, sizeof(host));
+     currentTime = time(NULL);
+diff -urNp rpm2html-1.11.2.org/sql.c rpm2html-1.11.2/sql.c
+--- rpm2html-1.11.2.org/sql.c	2010-10-05 23:36:54.000000000 +0900
++++ rpm2html-1.11.2/sql.c	2012-08-22 15:13:56.123113252 +0900
+@@ -114,10 +114,10 @@ int init_sql(const char *host, const cha
+ 	}
+ 	sleep(15);
+     }
+-    myhost = strdup(host);
+-    mybase = strdup(base);
+-    myuser = strdup(user);
+-    mypasswd = strdup(passwd);
++    myhost = (host) ? strdup(host) : NULL;
++    mybase = (base) ? strdup(base) : NULL;
++    myuser = (user) ? strdup(user) : NULL;
++    mypasswd = (passwd) ? strdup(passwd) : NULL;
+     sql_check_tables();
+     return(0);
+ }
+@@ -855,7 +855,7 @@ ID int(11) NOT NULL auto_increment, \n\
+ filename varchar(255) NOT NULL, \n\
+ Name varchar(50) NOT NULL, \n\
+ Version varchar(50) NOT NULL, \n\
+-Release varchar(50) NOT NULL, \n\
++PkgRelease varchar(50) NOT NULL, \n\
+ Arch varchar(15) NOT NULL, \n\
+ Dist int(11), \n\
+ URL varchar(255), \n\
+@@ -1381,7 +1381,7 @@ int sql_add_package(const char *filename
+     if (Version != NULL)
+ 	nb_fields += sql_update_id("Packages", id, "Version", Version);
+     if (Release != NULL)
+-	nb_fields += sql_update_id("Packages", id, "Release", Release);
++	nb_fields += sql_update_id("Packages", id, "PkgRelease", Release);
+     if (Release != NULL)
+ 	nb_fields += sql_update_id("Packages", id, "Arch", Arch);
+     if (Category != NULL)
+@@ -2211,7 +2211,7 @@ sqlRpmByDate(void) {
+     if (rpm2htmlVerbose)
+ 	printf("sqlRpmByDate query\n");
+ 
+-    query = "select ID,Name,Version,Release,Arch,Date,Summary,filename,Dist,Category,Os,Packager,Vendor from Packages where Date IS NOT NULL  and Date < UNIX_TIMESTAMP() + 300000 order by Date desc limit 1000";
++    query = "select ID,Name,Version,PkgRelease,Arch,Date,Summary,filename,Dist,Category,Os,Packager,Vendor from Packages where Date IS NOT NULL  and Date < UNIX_TIMESTAMP() + 300000 order by Date desc limit 1000";
+ 
+     /*
+      * Search first for the ID if it already exists
+@@ -2268,7 +2268,7 @@ sqlRpmAll(void) {
+     if (rpm2htmlVerbose)
+ 	printf("sqlRpmAll query\n");
+ 
+-    query = "select ID,Name,Version,Release,Arch,Date,Summary,filename,Dist,Category,Os,Packager,Vendor from Packages";
++    query = "select ID,Name,Version,PkgRelease,Arch,Date,Summary,filename,Dist,Category,Os,Packager,Vendor from Packages";
+ 
+     /*
+      * Search first for the ID if it already exists
+@@ -2413,7 +2413,7 @@ void sql_dump_rdf_full_index(void) {
+      * Query the database for the information providing the resource.
+      */
+     snprintf(query, SMALL_QUERY,
+-       "select filename,Dist,Name,Version,Release,Arch,Summary from Packages");
++       "select filename,Dist,Name,Version,PkgRelease,Arch,Summary from Packages");
+     query[SMALL_QUERY - 1] = 0;
+     if (mysql_query(sql, query)) {
+ 	printf("sql_dump_rdf_full_index: SELECT from Packages failed: %s\n",
+@@ -2545,7 +2545,7 @@ void sql_dump_rdf(const char *resource) 
+      * Query the database for the information providing the resource.
+      */
+     snprintf(query, MAX_QUERY,
+-"select Packages.filename,Packages.Dist,Packages.Name,Packages.Version,Packages.Release,Packages.Arch,Packages.Os,Packages.Packager,Packages.Date,Packages.Size,Packages.Vendor from Packages,Provides where Provides.Resource=\"%s\" and Provides.ID = Packages.ID",
++"select Packages.filename,Packages.Dist,Packages.Name,Packages.Version,Packages.PkgRelease,Packages.Arch,Packages.Os,Packages.Packager,Packages.Date,Packages.Size,Packages.Vendor from Packages,Provides where Provides.Resource=\"%s\" and Provides.ID = Packages.ID",
+              resource);
+     query[MAX_QUERY - 1] = 0;
+     if (mysql_query(sql, query)) {
